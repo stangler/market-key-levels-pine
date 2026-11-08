@@ -66,7 +66,14 @@ cooldown = input.int(10, "同じ節目のクールダウン（本）", minval=0,
 // 前日・前週データ
 //══════════════════════════════════════════════════════════════
 [pdh, pdl, pdc, pdo] = request.security(syminfo.tickerid, "D", [high[1], low[1], close[1], open[1]], lookahead=barmerge.lookahead_on)
-[pwh, pwl, pwc, cwo] = request.security(syminfo.tickerid, "W", [high[1], low[1], close[1], open], lookahead=barmerge.lookahead_on)
+[pwh, pwl, pwc] = request.security(syminfo.tickerid, "W", [high[1], low[1], close[1]], lookahead=barmerge.lookahead_on)
+
+// 今週始値: チャート自身の足から「今週最初の足の始値」を取得（週足リクエストと足の区切りがズレる銘柄への対策）
+wk_no = weekofyear(time, "Asia/Tokyo")
+wk_chg = ta.change(wk_no)
+var float cwo = na
+if barstate.isfirst or wk_chg != 0
+    cwo := open
 
 // ピボット
 pp = (pdh + pdl + pdc) / 3.0
