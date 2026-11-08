@@ -1,5 +1,5 @@
 //@version=6
-indicator("相場の節目自動表示 Ver6（ボックス修正版）", overlay=true, max_lines_count=100, max_labels_count=100, max_boxes_count=50)
+indicator("相場の節目自動表示 Ver7（サイン付き）", overlay=true, max_lines_count=100, max_labels_count=100, max_boxes_count=50, max_bars_back=500)
 
 //══════════════════════════════════════════════════════════════
 // 設定
@@ -43,6 +43,24 @@ round_count = input.int(6, "上下に表示する本数", minval=1, maxval=15, g
 round_color = input.color(color.new(#9e9e9e, 30), "キリ番の色", group=group_round)
 
 line_width = input.int(1, "ライン太さ", minval=1, maxval=3)
+
+group_sig = "【サイン】"
+use_sig = input.bool(true, "サインを表示", group=group_sig)
+use_wick = input.bool(true, "ヒゲ反転", group=group_sig)
+use_dbl = input.bool(true, "ダブルトップ/ボトム", group=group_sig)
+use_fail = input.bool(true, "抜け失敗", group=group_sig)
+atr_len = input.int(14, "ATR期間", minval=1, group=group_sig)
+tol_mult = input.float(0.15, "節目への接近許容（ATR倍）", minval=0.0, step=0.05, group=group_sig)
+pierce_mult = input.float(0.30, "節目の突き抜け許容（ATR倍）", minval=0.0, step=0.05, group=group_sig)
+wick_ratio = input.float(2.0, "ヒゲ/実体の比率", minval=0.5, step=0.5, group=group_sig)
+wick_min = input.float(0.5, "ヒゲの最小長（ATR倍）", minval=0.0, step=0.1, group=group_sig)
+pivot_len = input.int(3, "ピボット左右本数", minval=1, maxval=10, group=group_sig)
+dbl_lookback = input.int(20, "ダブルの最大間隔（本）", minval=3, maxval=200, group=group_sig)
+dbl_depth = input.float(0.5, "ダブルの谷の深さ（ATR倍）", minval=0.0, step=0.1, group=group_sig)
+fail_lookback = input.int(30, "抜け失敗の観測本数", minval=5, maxval=200, group=group_sig)
+fail_touches = input.int(2, "抜け失敗の最小タッチ回数", minval=2, maxval=10, group=group_sig)
+fail_away = input.float(1.0, "離脱判定（ATR倍）", minval=0.1, step=0.1, group=group_sig)
+cooldown = input.int(10, "同じ節目のクールダウン（本）", minval=0, maxval=200, group=group_sig)
 
 //══════════════════════════════════════════════════════════════
 // 前日・前週データ
@@ -139,6 +157,182 @@ else if is_ny
 else if is_ny[1] and not is_ny
     nyH := nyH_cur
     nyL := nyL_cur
+
+//══════════════════════════════════════════════════════════════
+// サイン判定（各バー時点の節目を配列にして判定）
+//══════════════════════════════════════════════════════════════
+atr = ta.atr(atr_len)
+tol = atr * tol_mult
+pierce = atr * pierce_mult
+away = atr * fail_away
+
+f_push(arr, cond, v) =>
+    if cond and not na(v)
+        array.push(arr, v)
+
+f_touch_sell(hi, cl, lv, t, p) =>
+    hi >= lv - t and hi <= lv + p and cl < lv
+
+f_touch_buy(lo, cl, lv, t, p) =>
+    lo <= lv + t and lo >= lv - p and cl > lv
+
+// 節目リスト（表示ONのものだけ）
+levels = array.new_float()
+f_push(levels, show_pdh, pdh)
+f_push(levels, show_pdl, pdl)
+f_push(levels, show_pdc, pdc)
+f_push(levels, show_pdo, pdo)
+f_push(levels, show_pwh, pwh)
+f_push(levels, show_pwl, pwl)
+f_push(levels, show_cwo, cwo)
+f_push(levels, show_pivot and show_r2, r2)
+f_push(levels, show_pivot and show_r1, r1)
+f_push(levels, show_pivot and show_pp, pp)
+f_push(levels, show_pivot and show_s1, s1)
+f_push(levels, show_pivot and show_s2, s2)
+f_push(levels, show_tokyo_box, tokyoH)
+f_push(levels, show_tokyo_box, tokyoL)
+f_push(levels, show_london_box, londonH)
+f_push(levels, show_london_box, londonL)
+f_push(levels, show_ny_box, nyH)
+f_push(levels, show_ny_box, nyL)
+if show_round
+    float rb = math.round(close / round_step) * round_step
+    for i = -2 to 2
+        float rlv = rb + i * round_step
+        if rlv > 0
+            array.push(levels, rlv)
+
+n_lv = array.size(levels)
+
+// ===== ① ヒゲ反転 =====
+body = math.abs(close - open)
+upper_wick = high - math.max(open, close)
+lower_wick = math.min(open, close) - low
+
+float sell_wick_lv = na
+float buy_wick_lv = na
+if use_wick and n_lv > 0
+    for i = 0 to n_lv - 1
+        float lv = array.get(levels, i)
+        if f_touch_sell(high, close, lv, tol, pierce) and upper_wick >= body * wick_ratio and upper_wick >= atr * wick_min
+            if na(sell_wick_lv) or math.abs(high - lv) < math.abs(high - sell_wick_lv)
+                sell_wick_lv := lv
+        if f_touch_buy(low, close, lv, tol, pierce) and lower_wick >= body * wick_ratio and lower_wick >= atr * wick_min
+            if na(buy_wick_lv) or math.abs(low - lv) < math.abs(low - buy_wick_lv)
+                buy_wick_lv := lv
+
+// ===== ② ダブルトップ / ダブルボトム =====
+ph = ta.pivothigh(high, pivot_len, pivot_len)
+pl = ta.pivotlow(low, pivot_len, pivot_len)
+var float prev_ph = na
+var int prev_ph_bar = na
+var float prev_pl = na
+var int prev_pl_bar = na
+
+float sell_dbl_lv = na
+float buy_dbl_lv = na
+
+if not na(ph)
+    int cur_bar = bar_index - pivot_len
+    if use_dbl and n_lv > 0 and not na(prev_ph) and cur_bar - prev_ph_bar <= dbl_lookback
+        int span = bar_index - prev_ph_bar
+        float valley = low
+        for k = pivot_len to span
+            valley := math.min(valley, low[k])
+        if math.min(ph, prev_ph) - valley >= atr * dbl_depth
+            for i = 0 to n_lv - 1
+                float lv = array.get(levels, i)
+                if ph >= lv - tol and ph <= lv + pierce and prev_ph >= lv - tol and prev_ph <= lv + pierce and close < lv
+                    if na(sell_dbl_lv) or math.abs(ph - lv) < math.abs(ph - sell_dbl_lv)
+                        sell_dbl_lv := lv
+    prev_ph := ph
+    prev_ph_bar := cur_bar
+
+if not na(pl)
+    int cur_bar = bar_index - pivot_len
+    if use_dbl and n_lv > 0 and not na(prev_pl) and cur_bar - prev_pl_bar <= dbl_lookback
+        int span = bar_index - prev_pl_bar
+        float peak = high
+        for k = pivot_len to span
+            peak := math.max(peak, high[k])
+        if peak - math.max(pl, prev_pl) >= atr * dbl_depth
+            for i = 0 to n_lv - 1
+                float lv = array.get(levels, i)
+                if pl <= lv + tol and pl >= lv - pierce and prev_pl <= lv + tol and prev_pl >= lv - pierce and close > lv
+                    if na(buy_dbl_lv) or math.abs(pl - lv) < math.abs(pl - buy_dbl_lv)
+                        buy_dbl_lv := lv
+    prev_pl := pl
+    prev_pl_bar := cur_bar
+
+// ===== ③ 抜け失敗（何度も跳ね返され、節目から離れ始めた） =====
+float sell_fail_lv = na
+float buy_fail_lv = na
+if use_fail and n_lv > 0 and not na(away)
+    for i = 0 to n_lv - 1
+        float lv = array.get(levels, i)
+        if close < lv and lv - close >= away and lv - close[1] < away
+            int touches = 0
+            bool broke = false
+            for k = 1 to fail_lookback
+                if close[k] >= lv
+                    broke := true
+                if f_touch_sell(high[k], close[k], lv, tol, pierce) and not f_touch_sell(high[k + 1], close[k + 1], lv, tol, pierce)
+                    touches += 1
+            if touches >= fail_touches and not broke
+                if na(sell_fail_lv) or (lv - close) < (sell_fail_lv - close)
+                    sell_fail_lv := lv
+        if close > lv and close - lv >= away and close[1] - lv < away
+            int touches = 0
+            bool broke = false
+            for k = 1 to fail_lookback
+                if close[k] <= lv
+                    broke := true
+                if f_touch_buy(low[k], close[k], lv, tol, pierce) and not f_touch_buy(low[k + 1], close[k + 1], lv, tol, pierce)
+                    touches += 1
+            if touches >= fail_touches and not broke
+                if na(buy_fail_lv) or (close - lv) < (close - buy_fail_lv)
+                    buy_fail_lv := lv
+
+// ===== 統合・クールダウン =====
+var float last_sell_lv = na
+var int last_sell_bar = na
+var float last_buy_lv = na
+var int last_buy_bar = na
+
+float sell_lv = not na(sell_dbl_lv) ? sell_dbl_lv : not na(sell_fail_lv) ? sell_fail_lv : sell_wick_lv
+float buy_lv = not na(buy_dbl_lv) ? buy_dbl_lv : not na(buy_fail_lv) ? buy_fail_lv : buy_wick_lv
+
+bool sell_ok = use_sig and not na(sell_lv) and barstate.isconfirmed
+if sell_ok and not na(last_sell_lv) and math.abs(sell_lv - last_sell_lv) <= tol and bar_index - last_sell_bar < cooldown
+    sell_ok := false
+if sell_ok
+    last_sell_lv := sell_lv
+    last_sell_bar := bar_index
+
+bool buy_ok = use_sig and not na(buy_lv) and barstate.isconfirmed
+if buy_ok and not na(last_buy_lv) and math.abs(buy_lv - last_buy_lv) <= tol and bar_index - last_buy_bar < cooldown
+    buy_ok := false
+if buy_ok
+    last_buy_lv := buy_lv
+    last_buy_bar := bar_index
+
+sig_sell_dbl = sell_ok and not na(sell_dbl_lv)
+sig_sell_fail = sell_ok and not sig_sell_dbl and not na(sell_fail_lv)
+sig_sell_wick = sell_ok and not sig_sell_dbl and not sig_sell_fail
+sig_buy_dbl = buy_ok and not na(buy_dbl_lv)
+sig_buy_fail = buy_ok and not sig_buy_dbl and not na(buy_fail_lv)
+sig_buy_wick = buy_ok and not sig_buy_dbl and not sig_buy_fail
+
+plotshape(sig_sell_wick, "売り:ヒゲ", style=shape.arrowdown, location=location.abovebar, color=#ff1744, size=size.small, text="ヒゲ", textcolor=#ff1744)
+plotshape(sig_sell_dbl, "売り:ダブルトップ", style=shape.arrowdown, location=location.abovebar, color=#ff1744, size=size.small, text="DT", textcolor=#ff1744)
+plotshape(sig_sell_fail, "売り:抜け失敗", style=shape.arrowdown, location=location.abovebar, color=#ff1744, size=size.small, text="失敗", textcolor=#ff1744)
+plotshape(sig_buy_wick, "買い:ヒゲ", style=shape.arrowup, location=location.belowbar, color=#00e676, size=size.small, text="ヒゲ", textcolor=#00e676)
+plotshape(sig_buy_dbl, "買い:ダブルボトム", style=shape.arrowup, location=location.belowbar, color=#00e676, size=size.small, text="DB", textcolor=#00e676)
+plotshape(sig_buy_fail, "買い:抜け失敗", style=shape.arrowup, location=location.belowbar, color=#00e676, size=size.small, text="失敗", textcolor=#00e676)
+
+alertcondition(sig_sell_wick or sig_sell_dbl or sig_sell_fail, "売りサイン", "節目: 売りサイン")
+alertcondition(sig_buy_wick or sig_buy_dbl or sig_buy_fail, "買いサイン", "節目: 買いサイン")
 
 //══════════════════════════════════════════════════════════════
 // ライン＆ラベル
